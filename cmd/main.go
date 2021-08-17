@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	_ "github.com/lib/pq"
 	"github.com/rs/zerolog"
 
 	"github.com/andreipimenov/golang-training-2021/internal/config"
@@ -29,14 +31,31 @@ func main() {
 
 	r := chi.NewRouter()
 
-	repo := repository.New()
-	service := service.New(&logger, repo, cfg.ExternalAPIToken)
-	h := handler.New(&logger, service)
+	db, err := sql.Open("postgres", cfg.DBConnString)
+	if err != nil {
+		logger.Fatal().Err(err).Msg("DB initializing error")
+	}
+	defer db.Close()
+
+	err = db.Ping()
+	if err != nil {
+		logger.Fatal().Err(err).Msg("DB pinging error")
+	}
+
+	stockRepo := repository.NewCache()
+	stockService := service.NewStock(&logger, stockRepo, cfg.ExternalAPIToken)
+	stockHandler := handler.NewStock(&logger, stockService)
+
+	authRepo := repository.NewAuth(db)
+	authService := service.NewAuth(&logger, authRepo, []byte(cfg.Secret))
+	authHandler := handler.NewAuth(&logger, authService)
 
 	r.Route("/", func(r chi.Router) {
 		r.Use(middleware.RequestLogger(&handler.LogFormatter{Logger: &logger}))
 		r.Use(middleware.Recoverer)
-		r.Method(http.MethodGet, handler.Path, h)
+		r.Use(handler.JWT([]byte(cfg.Secret)))
+		r.Method(http.MethodGet, handler.StockPath, stockHandler)
+		r.Method(http.MethodPost, handler.AuthPath, authHandler)
 	})
 
 	srv := http.Server{
